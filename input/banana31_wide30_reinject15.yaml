@@ -1,0 +1,67 @@
+# 31D analytic ridge: the 29D wide target plus a curved ridge in x_30, x_31.
+#
+# A 16-iteration (it0..it15) re-run of the 31D ridge on current dev, with the two
+# features that postdate the original 6-iteration arms both ON:
+#
+#   * DYNAMIC c        -- training.msre_ess_floor: 0.1
+#   * PER-ITERATION RE-INJECTION -- acquisition.n_inject: 100, which re-fits the
+#     quadratic on the WHOLE accumulated training set each iteration and draws 100
+#     fresh points from it. prior.n_inject: 100 does the same once, for iteration 0,
+#     so every iteration's training set receives 2000 acquired + 100 injected.
+#
+
+# Closest predecessor: 20260907_183811_b31_w30_inject (dCM 0.2671, the best-scoring 31D
+# arm), which is this recipe minus per-iteration re-injection and stopped at it5.
+#
+# Training set: 2100 * (N+1) points at iteration N, so 33 600 at it15.
+#
+# Run with `-i 16`, NOT on the convergence criterion. `-i` sets use_convergence False
+# (run/run.py:121), so the drift threshold below cannot stop the run early while drift
+# is still computed and printed every iteration. max_iterations is set to match for
+# self-consistency but does not govern.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/banana_planck31_wide.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 30.0
+  n_inject: 100      # one-shot, iteration 0
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20      # pool = 40000 from the chain, plus a disjoint reference of ~n_train
+  n_neighbors: 20
+  target_temperature: 7.0
+  n_inject: 100      # EVERY iteration, re-fit on the whole training set
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1   # dynamic c
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 432
+  n_steps: 100000
+  thin: 5
+  burn_in: 5000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16   # iterations 0..15; overridden by -i 16
+
+seed: 42

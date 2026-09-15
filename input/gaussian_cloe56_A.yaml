@@ -1,0 +1,58 @@
+# MODEL A for the 58D transfer experiment: the Euclid/CLOE Gaussian with ombh2 and
+# omch2 FIXED at their means, giving 56 dimensions.
+#
+# Generated from input/gaussian_cloe58_reinject_n10.yaml by changing ONLY the likelihood
+# input, so the recipe is identical to the +/-10 sigma re-injection arm that reached
+# dCM 1.0802 (91x the noise floor) at iteration 15 -- dynamic c (msre_ess_floor 0.1),
+# one-shot AND per-iteration injection of 100, n_sigma 10, 2000 points per iteration,
+# 216 walkers, 60000 steps, seed 42, iterations 0..15.
+#
+# The pair was chosen by mutual information with the remaining 56 (5.747 nats, the
+# highest of any cosmological pair); nesting verified to 3.24e-09 on a scale of 1.44e+04,
+# offset +5.83801 in logpost, recorded in input/cobaya/gaussian_cloe56.transfer.json.
+#
+# Why this target rather than the 27D Planck Gaussian: there the four arms separated by
+# less than the corner plots could show. Here the design box in MARGINAL sigma is 7.0x
+# (ombh2) and 16.2x (omch2) too wide conditionally, against 9.9x and 1.7x at 27D, and the
+# matrix carries 18 parameter pairs above |r| = 0.9 against one.
+#
+# Chain buffer: 60000 x 216 x 56 x float32 = 2.90 GiB, against 3.0 GiB for the 58D runs.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/gaussian_cloe56.yaml
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+  n_inject: 100
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  n_inject: 100
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 432
+  n_steps: 60000
+  thin: 5
+  burn_in: 5000
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16
+seed: 42

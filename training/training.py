@@ -1,77 +1,65 @@
-import os
-import time
-import pickle
-import h5py
+import numpy as np
+import pandas as pd
 import tensorflow as tf
 from keras.callbacks import EarlyStopping
-from training.loss_functions import get_loss_function
 
-def save_training_data(x, y, path):
-    with h5py.File(path, 'w') as f:
-        data = f.create_group('data')
-        data.create_dataset('x', data=x, dtype='f8')
-        data.create_dataset('y', data=y, dtype='f8')
 
-def load_training_data(path):
-    with h5py.File(path, 'r') as f:
-        return f['data']['x'][...], f['data']['y'][...]
+def save_history(history, path):
+    pd.DataFrame(history).to_csv(path, index=False)
 
-def _get_configured_loss(cfg, y_train, y_scaler, n):
-    if cfg.loss_func == 'msre':
-        y_max, y_std = float(y_train.max()), float(y_scaler.scale_[0])
-        return get_loss_function(cfg.loss_func, y_max, cfg.kappa_sigma, n, y_std)
-    return get_loss_function(cfg.loss_func)
 
-def _create_early_stopping_callback(cfg):
-    return EarlyStopping(
-        monitor='val_loss',
-        patience=cfg.patience,
-        restore_best_weights=True,
-        verbose=1
-    )
+def build_optimizer(learning_rate):
+    """Adam. The alternatives explored during development -- Muon, and an Adam variant
+    carrying a K-FAC style input preconditioner -- are not included: Muon measured 10.6x
+    slower per epoch on this architecture, and the preconditioner recovered only 11-55%
+    of an effect that was itself harmful to the credible metric. See CHANGES.md."""
+    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-def _compile_model(model, cfg, loss_function):
+
+def train_model(
+    model,
+    inputs,
+    targets,
+    loss,
+    learning_rate,
+    n_epochs,
+    batch_size,
+    validation_split,
+    patience,
+    return_metrics=True,
+):
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.learning_rate),
-        loss=loss_function,
-        jit_compile=True
+        optimizer=build_optimizer(learning_rate),
+        loss=loss,
+        jit_compile=True,
     )
 
-def _save_training_artifacts(cfg, model, history, iteration):
-    history_path = os.path.join(cfg.training_history_dir, f'history_it_{iteration}.pkl')
-    with open(history_path, 'wb') as f:
-        pickle.dump(history.history, f)
-    
-    model_path = os.path.join(cfg.trained_models_dir, f'trained_model_it_{iteration}.keras')
-    model.save(model_path)
-
-def _extract_training_metrics(history, start_time):
-    return {
-        'epochs_trained': len(history.history['loss']),
-        'final_train_loss': float(history.history['loss'][-1]),
-        'final_val_loss': float(history.history['val_loss'][-1]),
-        'training_time': time.time() - start_time
-    }
-
-def train_model(cfg, model, x_train, y_train, y_scaler=None, iteration=0, return_metrics=False):
-    start_time = time.time() if return_metrics else None
-    
-    dim = x_train.shape[1]
-    loss_function = _get_configured_loss(cfg, y_train, y_scaler, dim)
-    _compile_model(model, cfg, loss_function)
-    
     history = model.fit(
-        x_train,
-        y_train,
-        epochs=cfg.epochs,
-        batch_size=cfg.batch_size,
-        validation_split=cfg.val_split,
+        inputs,
+        targets,
+        epochs=n_epochs,
+        batch_size=batch_size,
+        validation_split=validation_split,
         verbose=2,
-        callbacks=[_create_early_stopping_callback(cfg)]
+        callbacks=[
+            EarlyStopping(
+                monitor="val_loss",
+                patience=patience,
+                restore_best_weights=True,
+                verbose=1,
+            )
+        ],
     )
-    
-    _save_training_artifacts(cfg, model, history, iteration)
-    
+
     if return_metrics:
-        return history, _extract_training_metrics(history, start_time)
+        best_epoch_idx = min(
+            range(len(history.history["val_loss"])),
+            key=lambda i: history.history["val_loss"][i],
+        )
+        metrics = {
+            "epoch": best_epoch_idx + 1,
+            "loss": float(history.history["loss"][best_epoch_idx]),
+            "val_loss": float(history.history["val_loss"][best_epoch_idx]),
+        }
+        return history, metrics
     return history

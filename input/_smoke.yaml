@@ -1,0 +1,51 @@
+# Deliberately tiny end-to-end smoke test: proves the loop runs, nothing about accuracy.
+# Exercises the LHC design, iteration-0 peak injection, dynamic c, training, AIES sampling
+# with thinning, the drift metric, batched candidate selection and per-iteration
+# re-injection. 16D analytic banana, no Boltzmann solver needed.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/banana_lcdm16.yaml
+
+prior:
+  n_samples: 300
+  sampling_strategy: lhs
+  n_sigma: 10.0
+  n_inject: 20          # injection at iteration 0
+
+acquisition:
+  n_append: 100
+  pool_factor: 5
+  n_neighbors: 10
+  target_temperature: 7.0
+  n_inject: 20          # continuous re-injection
+  batch_size: 10        # batched selector
+
+model:
+  n_layers: 2
+  n_neurons: 64
+  activation: alsing
+
+training:
+  n_epochs: 40
+  batch_size: 64
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1   # dynamic c
+  learning_rate: 0.001
+  validation_split: 0.1
+  patience: 10
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 32
+  n_steps: 600
+  thin: 3               # the thin path
+  burn_in: 50
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 2
+
+seed: 42

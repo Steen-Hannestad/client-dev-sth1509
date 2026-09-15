@@ -1,0 +1,63 @@
+# ARM 7: the CONTROL for arm 6. Same +/-10 sigma design, but standard c and no injection
+# at all -- msre_ess_floor 0.0, prior.n_inject 0, acquisition.n_inject 0.
+#
+# It exists to separate two explanations of arm 6's 791x the noise floor at iteration 10:
+# that +/-10 sigma is simply hard, or that per-iteration re-injection destabilises the fit
+# when the initial design is too far out (arm 6's injection vertex collapsed to -191.9 at
+# iteration 2, against a true maximum of +343.92, and took five iterations to recover).
+# Without this arm neither reading can be ruled out.
+#
+# Run to iteration 15 to match arm 6, and scored at BOTH 10 and 15 so the 791x has a
+# like-for-like control.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/gaussian_cloe58.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.0   # standard c -- the loss exactly as dev ships it
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  # 216 was the banana setting (7.4 x ndim at 29D); here it is 3.7 x ndim, still well
+  # above the 2 x floor the stretch move needs. AIES acceptance on the TRUE 58D target
+  # at T=7 is 0.106, against 0.199 at 29D and 0.137 at 31D -- lower, but workable.
+  n_walkers: 432
+  # 60000, not the 100000 the 29D/31D runs used, for memory: the chain buffer is
+  # (n_steps, n_walkers, ndim) float32, which at 58D is 5.0 GiB at 100000 steps against
+  # 2.7 GiB at 31D, on a 16 GiB machine. 60000 restores the 3.0 GiB the 31D runs ran at.
+  # It is not a blind cut: max(tau) on the TRUE target at T=7 is 1517, so 60000 steps is
+  # 36 tau -- between the 31D reference (21) and the 29D (51).
+  n_steps: 60000
+  thin: 5
+  burn_in: 5000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16   # iterations 0..15, matching arm 6
+
+seed: 42

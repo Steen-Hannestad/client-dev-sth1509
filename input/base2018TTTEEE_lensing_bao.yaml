@@ -1,23 +1,17 @@
 likelihood:
   wrapper: montepython
-  param: input/montepython/base2018TTTEEE_lensing_bao.param
-  conf: config/default.conf
-  path: resources/montepython_public/montepython
+  input: input/montepython/base2018TTTEEE_lensing_bao.param
 
-data:
-  scalers:
-    parameters: standard
-    targets: standard
-  initial:
-    n_samples: 5000
-    strategy: lhs
-    n_std: 10.0
-  iterative:
-    n_candidates: 5000
-    strategy: adaptive
-    k_NN: 20
-    temperature: 7.0
-    update_freq: 50
+prior:
+  n_samples: 5000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+
+acquisition:
+  n_append: 1000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
 
 model:
   n_layers: 5
@@ -28,25 +22,21 @@ training:
   n_epochs: 5000
   batch_size: 128
   loss: msre
-  kappa_sigma: 3
+  sigma_level: 3
   learning_rate: 0.0001
-  val_split: 0.1
+  validation_split: 0.1
   patience: 250
 
 sampling:
-  save_chains: false
+  sampler: aies
   temperature: 7.0
-  method: emcee
-  emcee:
-    n_walkers: 216
-    max_steps: 100000
-    burn_in: 5000
-    ess_target: 50
-    delta_tau_tol: 0.05
-    chunk_size: 5000
-    ac_thin: 10
+  n_walkers: 432
+  n_steps: 100000
+  thin: 5
+  burn_in: 5000
 
 convergence:
-  r_minus_one_threshold: 0.01
+  metric: gaussian_posterior_drift
+  threshold: 0.01
   max_iterations: 20
     

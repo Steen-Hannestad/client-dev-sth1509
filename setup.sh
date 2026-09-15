@@ -254,38 +254,89 @@ if [ -n "$MONTEPYTHON_PATH" ]; then
     # Detect existing clik installation
     DETECTED_CLIK_PARENT="${RESOURCES_DIR}/planck"
     if [ -n "$CLIK" ] && [ -f "$CLIK/bin/clik_profile.sh" ]; then
-        DETECTED_CLIK_PARENT=$(echo "$CLIK" | sed 's|/code/plc_3.0/plc-3.01$||')
+        DETECTED_CLIK_PARENT=$(dirname "${CLIK%/}")
         print_info "Detected Planck likelihood at: ${CLIK}"
     elif command_exists clik_print_version; then
-        DETECTED_CLIK_PARENT=$(which clik_print_version 2>/dev/null | sed 's|/bin/clik_print_version||;s|/code/plc_3.0/plc-3.01$||')
-        [ -n "$DETECTED_CLIK_PARENT" ] && print_info "Detected Planck likelihood in PATH"
+        _clik_dir=$(which clik_print_version 2>/dev/null | sed 's|/bin/clik_print_version$||')
+        [ -n "$_clik_dir" ] && DETECTED_CLIK_PARENT=$(dirname "$_clik_dir") && \
+            print_info "Detected Planck likelihood in PATH"
     fi
     
     prompt_with_default "Enter directory where Planck likelihood is/will be installed" "$DETECTED_CLIK_PARENT" CLIK_INSTALL_DIR
-    CLIK_PATH="${CLIK_INSTALL_DIR}/code/plc_3.0/plc-3.01"
+    CLIK_PATH="${CLIK_INSTALL_DIR}/clik"
     
     if [ -d "$CLIK_PATH" ] && [ -f "$CLIK_PATH/bin/clik_profile.sh" ]; then
         print_success "Using existing Planck likelihood at: ${CLIK_PATH}"
     elif prompt_yes_no "Download and install Planck likelihood?" "y"; then
-        print_info "Downloading and building Planck likelihood..."
+        print_info "Cloning clik and downloading Planck likelihood data..."
         mkdir -p "$CLIK_INSTALL_DIR" && cd "$CLIK_INSTALL_DIR"
         
-        [ ! -f "COM_Likelihood_Code-v3.0_R3.01.tar.gz" ] && \
-            wget -O COM_Likelihood_Code-v3.0_R3.01.tar.gz "http://pla.esac.esa.int/pla/aio/product-action?COSMOLOGY.FILE_ID=COM_Likelihood_Code-v3.0_R3.01.tar.gz"
+        # Clone clik from GitHub
+        if [ ! -d "clik" ]; then
+            git clone https://github.com/benabed/clik.git clik
+        else
+            print_info "clik directory already exists, skipping clone."
+        fi
+        
+        # Download Planck likelihood data from the Planck Legacy Archive
         [ ! -f "COM_Likelihood_Data-baseline_R3.00.tar.gz" ] && \
             wget -O COM_Likelihood_Data-baseline_R3.00.tar.gz "http://pla.esac.esa.int/pla/aio/product-action?COSMOLOGY.FILE_ID=COM_Likelihood_Data-baseline_R3.00.tar.gz"
+        tar -xzf COM_Likelihood_Data-baseline_R3.00.tar.gz
+        rm COM_Likelihood_Data-baseline_R3.00.tar.gz
         
-        tar -xzf COM_Likelihood_Code-v3.0_R3.01.tar.gz && tar -xzf COM_Likelihood_Data-baseline_R3.00.tar.gz
-        rm COM_Likelihood_Code-v3.0_R3.01.tar.gz COM_Likelihood_Data-baseline_R3.00.tar.gz
-        
-        cd code/plc_3.0/plc-3.01
-        if ./waf configure --install_all_deps && ./waf install; then
+        cd clik
+
+        # Ensure astropy is available for Planck likelihood helper scripts
+        if python_package_exists astropy; then
+            print_success "astropy found in active environment."
+        else
+            print_warning "astropy not found. Planck likelihood tooling may require it."
+            if prompt_yes_no "Install astropy via conda (recommended)?" "y"; then
+                conda install -y -c conda-forge astropy
+                if python_package_exists astropy; then
+                    print_success "astropy installed successfully."
+                else
+                    print_warning "astropy installation may have failed. Continuing anyway."
+                fi
+            else
+                print_info "Skipping astropy installation."
+            fi
+        fi
+
+        # Detect cfitsio and optionally install via conda
+        CFITSIO_PREFIX=""
+        if [ -f "${CONDA_PREFIX}/lib/libcfitsio.so" ] || [ -f "${CONDA_PREFIX}/lib/libcfitsio.a" ]; then
+            print_success "cfitsio found in conda environment."
+            CFITSIO_PREFIX="${CONDA_PREFIX}"
+        elif pkg-config --exists cfitsio 2>/dev/null; then
+            print_success "cfitsio found via pkg-config."
+            CFITSIO_PREFIX="$(pkg-config --variable=prefix cfitsio)"
+        else
+            print_warning "cfitsio not found. clik requires it and will try to build it from source if not provided (this can fail on some systems)."
+            if prompt_yes_no "Install cfitsio via conda (recommended)?" "y"; then
+                conda install -y -c conda-forge cfitsio
+                if [ -f "${CONDA_PREFIX}/lib/libcfitsio.so" ] || [ -f "${CONDA_PREFIX}/lib/libcfitsio.a" ]; then
+                    print_success "cfitsio installed successfully."
+                    CFITSIO_PREFIX="${CONDA_PREFIX}"
+                else
+                    print_warning "cfitsio conda install may have failed. clik will attempt to build it from source."
+                fi
+            else
+                print_info "Skipping cfitsio installation. clik will attempt to build it from source."
+            fi
+        fi
+
+        # Build waf configure flags
+        WAF_FLAGS="--install_all_deps"
+        [ -n "$CFITSIO_PREFIX" ] && WAF_FLAGS="${WAF_FLAGS} --cfitsio_prefix=${CFITSIO_PREFIX}"
+
+        if ./waf configure $WAF_FLAGS && ./waf install; then
             CLIK_PATH="$(pwd)"
             cd "$SCRIPT_DIR"
-            print_success "Planck likelihood installed successfully!"
+            print_success "Planck likelihood (clik) installed successfully!"
         else
             cd "$SCRIPT_DIR"
-            print_error "Planck likelihood installation failed!"
+            print_error "Planck likelihood (clik) installation failed!"
             CLIK_PATH=""
         fi
     else
@@ -355,32 +406,26 @@ fi
 # ========================================
 print_section "Step 7: Configuration"
 
+
 if [ -n "$MONTEPYTHON_PATH" ]; then
     print_info "Generating MontePython configuration file..."
     mkdir -p "$CONFIG_DIR"
     DEFAULT_CONF="${CONFIG_DIR}/default.conf"
     
-    if [ -f "${MONTEPYTHON_PATH}/default.conf.template" ]; then
-        cp "${MONTEPYTHON_PATH}/default.conf.template" "$DEFAULT_CONF"
-    else
-        echo "# MontePython Configuration File" > "$DEFAULT_CONF"
-        echo "# Generated by CLiENT setup script" >> "$DEFAULT_CONF"
-        echo "" >> "$DEFAULT_CONF"
-    fi
-    
-    if [ -n "$CLASS_PATH" ]; then
-        grep -q "path\['cosmo'\]" "$DEFAULT_CONF" && \
-            sed -i "s|path\['cosmo'\].*|path['cosmo'] = '${CLASS_PATH}'|g" "$DEFAULT_CONF" || \
-            echo "path['cosmo'] = '${CLASS_PATH}'" >> "$DEFAULT_CONF"
-    fi
-    
-    if [ -n "$CLIK_PATH" ]; then
-        grep -q "path\['clik'\]" "$DEFAULT_CONF" && \
-            sed -i "s|path\['clik'\].*|path['clik'] = '${CLIK_PATH}'|g" "$DEFAULT_CONF" || \
-            echo "path['clik'] = '${CLIK_PATH}'" >> "$DEFAULT_CONF"
-    fi
+    {
+        [ -n "$CLASS_PATH" ] && echo "path['cosmo'] = '${CLASS_PATH}'"
+        [ -n "$CLIK_PATH" ]  && echo "path['clik'] = '${CLIK_PATH}/share/clik/'"
+    } > "$DEFAULT_CONF"
     
     print_success "Configuration file created: ${DEFAULT_CONF}"
+
+    # Generate montepython.yaml
+    MONTEPYTHON_YAML="${CONFIG_DIR}/montepython.yaml"
+    cat > "$MONTEPYTHON_YAML" << EOF
+conf: ${DEFAULT_CONF}
+path: ${MONTEPYTHON_PATH}/montepython
+EOF
+    print_success "Configuration file created: ${MONTEPYTHON_YAML}"
 fi
 
 # ========================================

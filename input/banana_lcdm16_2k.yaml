@@ -1,0 +1,45 @@
+# 16D banana on the dev branch: 2000-point initial LHC, 2000 points appended per
+# iteration. Unlike main, every appended point is evaluated with the true likelihood --
+# dev's acquisition selects exactly n_append points and has no surrogate rejection
+# stage -- so this is 2000 true calls per iteration, not a candidate budget.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/banana_lcdm16.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20      # pool = 40000 drawn from the chain, plus a disjoint reference
+  n_neighbors: 20
+  target_temperature: 7.0
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 432       # matches main's runs on this target
+  n_steps: 30000       # dev's AIES has no adaptive stopping; main converged at 25-35k
+  thin: 5
+  burn_in: 5000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 20

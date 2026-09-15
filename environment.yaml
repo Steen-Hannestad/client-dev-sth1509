@@ -1,24 +1,35 @@
+# Verified against the environment these results were produced in, 15 September 2026.
+#
+# The version this file replaced pinned tensorflow 2.20.0 and pandas 2.2.3 -- neither of
+# which was what actually ran -- and omitted cobaya, emcee and h5py entirely, so an
+# environment built from it could not evaluate a likelihood or write a chain.
+#
+# The analytic targets (input/cobaya/banana_function.py and the inline Gaussians) need no
+# Boltzmann solver: CLASS, clik and MontePython are required only for the real-data
+# likelihoods.
 channels:
   - conda-forge
   - defaults
 
 dependencies:
+  # core
   - python=3.10.18
   - numpy=2.0.2
-  - scikit-learn=1.7.1
-  - h5py=3.14.0
-  - matplotlib=3.10.5
-  - tqdm=4.67.1
-  - emcee=3.1.6
-  - astropy=6.1.7
+  - pandas=2.3.3
   - scipy=1.15.3
-  - pip=25.2
+  - scikit-learn=1.7.1
+  - pyyaml=6.0.2
+  - cython=3.1.4
 
+  # sampling and chain I/O
+  - emcee=3.1.6
+  - h5py=3.14.0
+
+  # benchmarking and plots
+  - matplotlib=3.10.5
+  - getdist=1.7.1
+
+  - pip=25.2
   - pip:
-    - cython==3.1.4
-    - pyyaml==6.0.2
-    - joblib==1.5.1
-    - threadpoolctl==3.6.0
-    - getdist==1.7.1
-    - tensorflow[and-cuda]==2.19.0
-    - tensorflow-probability[tf]==0.25.0
+    - tensorflow==2.19.0
+    - cobaya==3.6.2

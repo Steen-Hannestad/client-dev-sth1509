@@ -1,138 +1,108 @@
-# likelihood/base.py
-
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
+from dataclasses import dataclass
+
 import numpy as np
 
+
+@dataclass(frozen=True)
+class ParameterInfo:
+    name: str
+    label: str
+    scale: float = 1.0
+    lower: float | None = None
+    upper: float | None = None
+    center: float | None = None
+    sigma: float | None = None
+
+
 class BaseLikelihood(ABC):
-    class NullException(Exception):
-        pass
-    
     def __init__(self):
-        self.param = {'varying': {}, 'fixed': {}, 'derived': {}}
-        self._original_ranges = {}
-        self._computation_exception = self.NullException
-        self._severe_exception = Exception
-    
-    @property
-    def varying_param_names(self) -> List[str]:
-        return list(self.param['varying'].keys())
-    
-    @property
-    def fixed_param_names(self) -> List[str]:
-        return list(self.param['fixed'].keys())
-    
-    @property
-    def derived_param_names(self) -> List[str]:
-        return list(self.param['derived'].keys())
-    
+        self._params = self._extract_params()
+        self._effective_bounds = None
+
     @abstractmethod
-    def _loglkl(self, position: Dict[str, float]) -> float:
+    def _extract_params(self):
         pass
-    
-    def _build_full_position(self, position: Dict[str, float]) -> Dict[str, float]:
-        full_position = {**position}
-        full_position.update({name: params['fixed_value'] for name, params in self.param['fixed'].items()})
-        return full_position
-    
-    def loglkl(self, position: Dict[str, float]) -> float:
-        full_position = self._build_full_position(position)
-        
-        try:
-            return self._loglkl(full_position)
-        except self._computation_exception as e:
-            print(f"Computation exception occurred: {e}. Returning -inf.")
-            return -np.inf
-        except self._severe_exception:
-            raise
-    
+
     @abstractmethod
-    def logprior(self, position: Dict[str, float]) -> float:
+    def loglkl(self, x):
+        """
+        Evaluate the backend's native log-probability at ``x``. For MontePython, this calls ``compute_lkl``. For Cobaya, this calls ``logposterior(..., return_derived=False)`` and returns its ``logpost`` value. Despite the method name, the returned value will include both log-likelihood and backend-defined log-prior contributions. Additional bounds imposed by ``restrict_prior_bounds`` are handled separately by ``logprior``.
+        """
         pass
-    
-    def logpost(self, position: Dict[str, float]) -> float:
-        lp = self.logprior(position)
+
+    @property
+    def param_names(self):
+        return [param.name for param in self._params]
+
+    @property
+    def param_labels(self):
+        return [param.label for param in self._params]
+
+    @property
+    def param_scales(self):
+        return [param.scale for param in self._params]
+
+    @property
+    def param_centers(self):
+        return [param.center for param in self._params]
+
+    @property
+    def param_sigmas(self):
+        return [param.sigma for param in self._params]
+
+    @property
+    def ndim(self):
+        return len(self._params)
+
+    @property
+    def prior_bounds(self):
+        if self._effective_bounds is not None:
+            return dict(self._effective_bounds)
+        return {param.name: (param.lower, param.upper) for param in self._params}
+
+    def restrict_prior_bounds(self, n_sigma):
+        restricted_bounds = {}
+        for param in self._params:
+            lower = param.center - n_sigma * param.sigma
+            upper = param.center + n_sigma * param.sigma
+            if param.lower is not None:
+                lower = max(lower, param.lower)
+            if param.upper is not None:
+                upper = min(upper, param.upper)
+            restricted_bounds[param.name] = (lower, upper)
+        self._effective_bounds = restricted_bounds
+
+    def logprior(self, x):
+        """
+        Return the additional bounds-based log-prior at ``x``. Returns zero inside the current effective bounds and negative infinity outside them. This does not reproduce any prior terms already evaluated by the backend.
+        """
+        bounds = self.prior_bounds
+        for value, param in zip(x, self._params):
+            lower, upper = bounds[param.name]
+            if lower is not None and value < lower:
+                return -np.inf
+            if upper is not None and value > upper:
+                return -np.inf
+        return 0.0
+
+    def logpost(self, x):
+        """
+        Return the total log-posterior value at ``x``. The result is the sum of the backend's native log-probability, returned by ``loglkl``, and the additional bounds-based log-prior, returned by ``logprior``. Consequently, the result is negative infinity when ``x`` lies outside the current effective bounds.
+        """
+        lp = self.logprior(x)
         if not np.isfinite(lp):
             return -np.inf
-        return self.loglkl(position) + lp
-    
-    def outside_of_prior_bound(self, position: Dict[str, float]) -> bool:
-        for param_name, value in position.items():
-            if param_name not in self.param['varying']:
-                continue
-            
-            lower, upper = self.param['varying'][param_name].get('range', [None, None])
-            if (lower is not None and value < lower) or (upper is not None and value > upper):
-                return True
-        return False
-    
-    def log_uniform_prior(self, position: Dict[str, float]) -> float:
-        if self.outside_of_prior_bound(position):
-            return -np.inf
-        return 0.0
-    
-    def set_fixed_parameters(self, fixed_param_dict: Dict[str, float]):
-        for param_name, fixed_value in fixed_param_dict.items():
-            if param_name in self.param['varying']:
-                self.param['fixed'][param_name] = self.param['varying'][param_name].copy()
-                self.param['fixed'][param_name]['fixed_value'] = fixed_value
-                del self.param['varying'][param_name]
-    
-    def _store_original_ranges(self):
-        if not self._original_ranges:
-            for param_name, param_info in self.param['varying'].items():
-                self._original_ranges[param_name] = param_info.get('range', [None, None]).copy()
-    
-    def _calculate_restricted_bounds(self, initial, sigma, n_std, original_range):
-        lower = initial - n_std * sigma
-        upper = initial + n_std * sigma
-        
-        if original_range[0] is not None:
-            lower = max(lower, original_range[0])
-        if original_range[1] is not None:
-            upper = min(upper, original_range[1])
-        
-        return [lower, upper]
-    
-    def restrict_prior(self, n_std: float = None):
-        self._store_original_ranges()
-        
-        if n_std is None:
-            return
-        
-        for param_name, param_info in self.param['varying'].items():
-            original_range = self._original_ranges[param_name]
-            sigma = param_info.get('sigma')
-            initial = param_info.get('initial')
-            
-            if sigma is not None and initial is not None:
-                param_info['range'] = self._calculate_restricted_bounds(initial, sigma, n_std, original_range)
-            elif original_range[0] is None or original_range[1] is None:
-                raise ValueError(
-                    f"Parameter {param_name} has infinite prior bounds and no sigma/initial "
-                    f"specified. Cannot restrict prior."
-                )
-    
-    def restore_prior(self):
-        if not self._original_ranges:
-            return
-        
-        for param_name in self.param['varying'].keys():
-            if param_name in self._original_ranges:
-                self.param['varying'][param_name]['range'] = self._original_ranges[param_name].copy()
-    
-    def get_prior_bounds(self) -> Dict[str, List[float]]:
-        bounds = {}
-        for param_name, param_info in self.param['varying'].items():
-            lower, upper = param_info.get('range', [None, None])
-            
-            if lower is None or upper is None:
-                raise ValueError(f"Parameter {param_name} has infinite prior bounds. Use restrict_prior() to set finite bounds for sampling.")
-            
-            bounds[param_name] = [lower, upper]
-        
-        return bounds
-    
-    @abstractmethod
-    def get_parameter_info(self) -> Dict[str, Any]:
-        pass
+        return self.loglkl(x) + lp
+
+
+def build_likelihood(wrapper, input_path):
+    if wrapper == "montepython":
+        from .montepython import MontePythonLikelihood
+
+        return MontePythonLikelihood(param_path=input_path)
+    if wrapper == "cobaya":
+        from .cobaya import CobayaLikelihood
+
+        return CobayaLikelihood(yaml_path=input_path)
+    raise ValueError(f"Unknown likelihood wrapper: {wrapper!r}")
