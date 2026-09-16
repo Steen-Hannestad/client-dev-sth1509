@@ -1,0 +1,81 @@
+# 31D analytic ridge, injection at iteration 0 only, with EVERY optimised setting this
+# package ships. Intended as the timing and quality comparison against the arm run with
+# the pre-optimisation settings.
+#
+# THE BASELINE IT IS COMPARED AGAINST
+#   results/20260914_190104_b31_inject15 (spliced with 20260907_183811_b31_w30_inject for
+#   iterations 0-4): 9.52 h of recorded compute over iterations 0-15, 17,724 best-epochs
+#   plus roughly 250 further epochs per iteration of patience tail, so ~21,700 epochs run.
+#   Its settings: n_walkers 216, thin unreachable, exact sequential selector, fixed
+#   lr 1e-4 with patience 250. Scored median dCM 0.0209 at it15 against a ~0.025 floor.
+#
+# WHAT CHANGES HERE, and what each was measured to do
+#   sampling.n_walkers 216 -> 432   2.04x the effective sample size at unchanged tau
+#                                   (3610 vs 3678), no wall-time penalty
+#   sampling.thin 1 -> 5            keeps the chain buffer at 40% of the old default
+#                                   despite the doubled ensemble: 1.00 GB vs 2.49 GB
+#   acquisition.batch_size 1 -> 10  batched density-deficit selection, 12.6x faster on a
+#                                   large request, per-parameter KS < 0.01 vs exact
+#   training.lr_schedule -> plateau annealing: 2.1x lower validation loss AND 2.4x better
+#                                   credible metric at a matched epoch budget
+#   sampling.chunk_size 5000 -> 1000  no speed cost measured, 5x less graph-internal memory
+#
+# UNCHANGED, deliberately: the loss and its ESS floor, prior.n_inject 100,
+# acquisition.n_inject absent (iteration 0 only), the 5x512 alsing architecture, the
+# +/-30 sigma design, 2000 points per iteration, seed 42. The point is to isolate the
+# optimised machinery, not to change the algorithm.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/banana_planck31_wide.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 30.0
+  n_inject: 100          # iteration 0 only
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  batch_size: 10         # batched selector
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000         # ceiling; the schedule-gated stopper decides
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250          # UNUSED while lr_schedule is 'plateau'
+  lr_schedule: plateau
+  lr_factor: 0.3
+  lr_patience: 75        # the factorial rejected 25 (26x worse loss: it freezes
+                         # the rate before the optimiser has descended). 75 is
+                         # the cautious side of that failure direction, and is
+                         # an extrapolation rather than a measured optimum.
+  lr_min: 1.0e-6         # 1e-7 rejected: +2% loss for +21% epochs
+  lr_grace: 100
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 432
+  n_steps: 100000
+  thin: 5
+  burn_in: 5000
+  chunk_size: 1000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16     # iterations 0..15; launch with -i 16, which disables the criterion
+
+seed: 42

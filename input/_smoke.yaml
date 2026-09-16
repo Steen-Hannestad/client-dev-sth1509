@@ -1,7 +1,8 @@
 # Deliberately tiny end-to-end smoke test: proves the loop runs, nothing about accuracy.
 # Exercises the LHC design, iteration-0 peak injection, dynamic c, training, AIES sampling
-# with thinning, the drift metric, batched candidate selection and per-iteration
-# re-injection. 16D analytic banana, no Boltzmann solver needed.
+# with thinning, the drift metric, batched candidate selection, per-iteration
+# re-injection, and that the annealing callbacks are attached and harmless.
+# 16D analytic banana, no Boltzmann solver needed.
 likelihood:
   wrapper: cobaya
   input: input/cobaya/banana_lcdm16.yaml
@@ -26,14 +27,19 @@ model:
   activation: alsing
 
 training:
-  n_epochs: 40
+  n_epochs: 250         # ceiling; the schedule-gated stopper should end it well before
   batch_size: 64
   loss: msre
   sigma_level: 3
   msre_ess_floor: 0.1   # dynamic c
   learning_rate: 0.001
   validation_split: 0.1
-  patience: 10
+  patience: 10          # unused while lr_schedule is 'plateau'
+  lr_schedule: plateau  # the default; the learning_rate column in the history proves
+                        # the callback is attached. It will NOT actually reduce on a
+                        # problem this easy -- val_loss improves every epoch here, so the
+                        # plateau is never detected. The reductions and the gated stopper
+                        # are covered deterministically by tests/test_lr_schedule.py.
 
 sampling:
   sampler: aies

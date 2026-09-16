@@ -3,7 +3,7 @@
 Every change in this version relative to the upstream CLiENT it was forked from, what it
 does to your results, and what you have to do about it.
 
-**Read §1 first.** Three changes are on by default and two of them change results.
+**Read §1 first.** Four changes are on by default and three of them change results.
 
 Depth lives elsewhere and is cross-referenced throughout: `CHANGES.md` for the iterative
 algorithm with the experiments behind it, `PERFORMANCE.md` for the speed and memory work
@@ -33,7 +33,106 @@ Every run prints what it did, so you can always see whether it was active:
 [msre] ESS floor 0.10: c 30.0 -> 4357.6 log-units (x145.04); ESS 53.3 -> 210.0 of 2100
 ```
 
-### 1.2 `acquisition.batch_size: 10` — batched candidate selection
+### 1.2 `training.lr_schedule: plateau` — learning-rate annealing
+
+**Changes results, for the better — and it is the only change tested in this project where
+a training-side gain carried through to the credible metric.** The rate is reduced by
+`lr_factor` whenever `val_loss` stalls for `lr_patience` epochs, down to `lr_min`, and
+training then stops `lr_grace` epochs later.
+
+At a matched epoch budget on the 31D ridge, against the previous fixed 1e-4:
+
+| | fixed | annealed |
+|---|---:|---:|
+| validation loss | 1.048e-04 | **4.901e-05** (2.1× lower) |
+| median ΔCM | 0.0322 | **0.0135** (2.4× better) |
+| max ΔCM excl. `x_30` | 0.2345 | **0.0696** |
+| better on | — | **27 of 31 parameters** |
+
+Six parameter differences clear twice the metric's noise floor in annealing's favour and
+**none** clears it the other way; both annealed seeds beat both fixed seeds on every
+aggregate. For contrast, input whitening bought 18–45× on validation loss and made ΔCM
+*worse* — which is why the metric, not the loss, is what qualifies a change here.
+
+**The mechanism is visible in the loss curve.** Over the 250 epochs before the best epoch,
+the coefficient of variation falls from **124% to 24%** and the number of those epochs
+within 10% of the best rises from **2 to 97**. At a fixed rate the optimiser was sampling a
+wide noise ball and `restore_best_weights` was catching a lucky dip; annealed, it settles.
+That also removes an uncontrolled source of run-to-run variance, since the shipped weights
+are no longer a fortunate draw.
+
+**`patience` is unused while this is on.** A plain `EarlyStopping` cannot terminate an
+annealed run: the smoothed curve creeps downward monotonically, so with `min_delta=0` every
+epoch resets the counter and it never fires — an annealed arm ran past 1500 epochs while
+its fixed twin stopped at 1184. A relative-improvement test does not fire either ("no 1%
+gain over 50 epochs" never triggered on either recorded curve). Hence the schedule-gated
+stopper, `training/training.py::StopAfterScheduleExhausted`.
+
+`lr_grace: 100` is a deliberate trade: simulated on the recorded curves it saved ~99 epochs
+for a 1.11× val_loss cost, and a 2.01× val_loss spread within the annealed family moved
+ΔCM by 9% — far below its 0.025 floor. Grinding out the tail buys a number that does not
+predict the metric.
+
+*To restore the old behaviour exactly:* `lr_schedule: none`.
+
+**On the hyper-parameters.** A 2×2 factorial over `lr_patience` 25/50 and `lr_min`
+1e-6/1e-7 (one seed) found `lr_patience: 25` **catastrophic — 26× worse loss**, because it
+reaches the floor by epoch 205 and freezes the rate before the optimiser has descended; its
+305 epochs are cheap only because the run is dead. `lr_min: 1e-7` was rejected at 2% of
+loss for 21% more epochs. The failure mode is annealing *too early*, so the shipped
+`lr_patience: 75` sits on the cautious side of it.
+
+**`lr_patience: 75` is an extrapolation, not a measured optimum.** The factorial shows
+25 ≪ 50; it does not show 75 > 50. Worth measuring.
+
+#### Across a whole iterative loop, 16 September 2026
+
+Everything above was measured on a *single fixed training set*. This is the first
+measurement across a full iterative loop, where `c` re-solves every iteration and the loss
+target therefore moves. Same 31D ridge, iterations 0–15, against the pre-annealing arm.
+The two runs share a **byte-identical iteration-0 training set**, so this is a controlled
+comparison rather than a matched one.
+
+| | pre-optimisation | optimised | |
+|---|---:|---:|---|
+| epochs run | 21,724 | **15,319** | 1.42× fewer |
+| wall clock | 9.52 h | **6.88 h** | 1.38× (1.46× less scoring contention) |
+| peak RSS | — | **3.55 GiB** | measured under `/usr/bin/time -l` |
+| median ΔCM, it15 | 0.0209 | **0.0084** | 2.49× |
+| **max ΔCM excl. `x_30`, it15** | **0.0754** | **0.0182** | **4.14×** |
+| max ΔCM at 95%, it15 | 0.0399 | **0.0128** | 3.12× |
+
+The quality result holds up: annealing's gain survives a changing training set, and
+`max excl. x_30` is the figure to trust — the median is floor-limited on both arms, and
+this run's chains carry ~2× the effective sample size, which lowers its own floor by ~√2.
+
+**Three findings that cut against the change, recorded because they are load-bearing:**
+
+1. **The speed prediction missed by roughly a factor of two.** 2.7× fewer epochs was
+   predicted; 1.42× was delivered. The cause is visible in the learning-rate ladder:
+   **51–68% of every iteration is spent at the initial rate**, before the first reduction
+   ever fires, descending `val_loss` from ~1.2 to ~1e-3. That is genuine descent, not a
+   stalled counter, and **no stopping rule can shorten it**. The 2.7× came from
+   generalising one measurement taken on the iteration-15 training set — where the descent
+   phase is short because the network is fitting 32,100 points — to all sixteen iterations.
+
+2. **The epoch saving inverts at late iterations.** The annealed schedule has a floor of
+   four reductions at `lr_patience: 75` plus `lr_grace: 100`. Once the emulator converges
+   enough for fixed-rate `EarlyStopping` to fire early, the baseline is *cheaper*:
+   0.93×, 0.83× and 0.68× at iterations 11, 12 and 15. It is paid for — `val_loss` is
+   2.3–3.2× better at exactly those iterations — but expect no epoch saving late in a run,
+   and **treat this as a live reason to measure `lr_patience: 50` against the shipped 75.**
+
+3. **The absolute `min_delta` makes behaviour depend on loss magnitude.** `ReduceLROnPlateau`
+   defaults to `min_delta=1e-4` *absolute*, so as `val_loss` falls the same improvement
+   stops counting. The initial-rate phase shrank from 695 to 347 epochs across the run for
+   this reason alone. A *relative* `min_delta` is worth considering.
+
+**Where the speed actually came from:** the sampling-side changes, which beat their
+prediction. 1.35× faster per pass at double the walkers, ~2× the effective sample size, and
+2.5× less chain memory. The training-side contribution is real but smaller than advertised.
+
+### 1.3 `acquisition.batch_size: 10` — batched candidate selection
 
 **Changes which points are selected, but not their distribution.** The density-deficit
 selector used to commit one candidate per pass over the candidate pool. It now commits ten,
@@ -54,7 +153,7 @@ approximation's error grows with `batch_size` and with how concentrated the defi
 landscape is. Beyond about 50 it also gets *slower*, because the pool × batch distance
 block leaves cache. `PERFORMANCE.md` §1 has the check to repeat on a new target.
 
-### 1.3 Sampler memory: the preallocated chain buffer
+### 1.4 Sampler memory: the preallocated chain buffer
 
 **Does not change results.** The chain used to be accumulated as per-chunk tensors,
 concatenated, then copied again, with all three alive at once — a high-water mark of

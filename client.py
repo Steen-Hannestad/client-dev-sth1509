@@ -342,6 +342,11 @@ def main():
                 batch_size=cfg.training.batch_size,
                 validation_split=cfg.training.validation_split,
                 patience=cfg.training.patience,
+                lr_schedule=cfg.training.lr_schedule,
+                lr_factor=cfg.training.lr_factor,
+                lr_patience=cfg.training.lr_patience,
+                lr_min=cfg.training.lr_min,
+                lr_grace=cfg.training.lr_grace,
             )
             training_time = time.monotonic() - training_start_time
             print_master(f"Finished training in {training_time:.2f}s")

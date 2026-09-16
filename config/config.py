@@ -105,6 +105,55 @@ class TrainingConfig:
     # Set 0.0 to recover the untouched loss exactly.
     msre_ess_floor: float = 0.1
 
+    # Learning-rate annealing. 'plateau' (the default) reduces the rate by lr_factor
+    # whenever val_loss stalls for lr_patience epochs, down to lr_min, and then stops
+    # lr_grace epochs later. 'none' restores the previous fixed-rate behaviour with the
+    # plain `patience` EarlyStopping.
+    #
+    # It is the default because it is the only change tested in this project where a
+    # training-side gain carried through to the credible metric. At a matched epoch
+    # budget on the 31D ridge, against a fixed 1e-4:
+    #
+    #     validation loss   2.1x lower      credible metric   2.4x better
+    #     median dCM        0.0135 vs 0.0322 (both seeds beat both fixed seeds)
+    #     better on 27 of 31 parameters, 6 resolvable wins, 0 resolvable losses
+    #
+    # The mechanism is in the loss curve. At a fixed rate the coefficient of variation
+    # over the 250 epochs before the best epoch is 124% and only 2 of those epochs come
+    # within 10% of the best -- the optimiser is sampling a wide noise ball and
+    # restore_best_weights catches a lucky dip. Annealed: CV 24%, and 97 epochs within
+    # 10%. The weights are a settled minimum rather than a fortunate draw, which also
+    # removes an uncontrolled source of run-to-run variance.
+    #
+    # `patience` is UNUSED when lr_schedule is 'plateau' -- see
+    # training/training.py::StopAfterScheduleExhausted for why a plain patience cannot
+    # terminate an annealed run at all.
+    #
+    # ON THE VALUE OF lr_patience. A 2x2 factorial over lr_patience 25/50 and lr_min
+    # 1e-6/1e-7 (seed 42; the second seed was not run) found:
+    #
+    #     lr_patience  lr_min   epochs  min_lr at   val_loss
+    #              50    1e-6      472        372   7.47e-05
+    #              25    1e-6      305        205   1.95e-03   <- 26x WORSE
+    #              50    1e-7      573        473   7.31e-05      (+2% for +101 epochs)
+    #              25    1e-7      356        256   1.99e-03   <- 26x WORSE
+    #
+    # lr_patience 25 is catastrophic: it anneals so fast that the rate is frozen at the
+    # floor by epoch 205, before the optimiser has descended, and the 305 epochs are cheap
+    # only because the run is dead. The failure mode is therefore annealing TOO EARLY, and
+    # 75 is set here to move further from it. lr_min 1e-7 was rejected: 2% of loss for 21%
+    # more epochs, and a 2x loss spread in this family moved the credible metric by 9%,
+    # far below its 0.025 floor.
+    #
+    # 75 IS AN EXTRAPOLATION, NOT A MEASUREMENT. The factorial establishes 25 << 50; it
+    # does not establish 75 > 50. It is the cautious side of a known failure direction.
+    # If it is ever measured, record the result here.
+    lr_schedule: str = "plateau"
+    lr_factor: float = 0.3
+    lr_patience: int = 75
+    lr_min: float = 1e-6
+    lr_grace: int = 100
+
     @classmethod
     def from_dict(cls, d):
         return cls(
@@ -116,6 +165,11 @@ class TrainingConfig:
             validation_split=float(d["validation_split"]),
             patience=int(d["patience"]),
             msre_ess_floor=float(d.get("msre_ess_floor", 0.1)),
+            lr_schedule=str(d.get("lr_schedule", "plateau")),
+            lr_factor=float(d.get("lr_factor", 0.3)),
+            lr_patience=int(d.get("lr_patience", 75)),
+            lr_min=float(d.get("lr_min", 1e-6)),
+            lr_grace=int(d.get("lr_grace", 100)),
         )
 
 

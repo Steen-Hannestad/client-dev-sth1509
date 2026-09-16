@@ -12,6 +12,10 @@ that were investigated but not shown to work.
 * **Peak injection at iteration 0** — `prior.n_inject`.
 * **Continuous re-injection** — `acquisition.n_inject`, re-fitting the quadratic on the
   whole accumulated training set every iteration.
+* **Learning-rate annealing** — `training.lr_schedule`, default on. 2.1× lower validation
+  loss *and* 2.4× better credible metric at a matched epoch budget; the only change tested
+  here where a training gain reached the metric. Includes a schedule-gated stopper, because
+  a plain `EarlyStopping` cannot terminate an annealed run.
 
 **Speed and memory changes** (documented in `PERFORMANCE.md`, with measurements)
 
@@ -125,6 +129,7 @@ h5py entirely.
 ## Verified
 
 * All 29 modules import; all 32 run configs parse.
+* `python tests/test_lr_schedule.py` — five tests covering the annealing callbacks.
 * `python client.py input/_smoke.yaml -n smoke -i 2` runs the full loop end to end on the
   16D analytic banana in about 20 s, exercising the LHC design, iteration-0 injection,
   dynamic `c`, training, thinned sampling, the drift metric, batched selection and
