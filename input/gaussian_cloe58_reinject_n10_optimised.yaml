@@ -1,0 +1,104 @@
+# 58D Euclid/CLOE Gaussian at +/-10 sigma, dynamic c + re-injection at EVERY iteration,
+# with every optimised setting this package ships. The timing and quality comparison
+# against the arm run with the pre-optimisation settings.
+#
+# THE BASELINE IT IS COMPARED AGAINST
+#   client_dev/results/20260909_125813_cloe58_wide (ARM 6 of the 58D notes), iterations
+#   0-15: 19,187 best-epochs, 6.56 h training, 1.87 h sampling, 7.97 h total. Scored
+#   against an exact reference at it15: max dCM 1.0802 (set by f_out_2), median 0.2600,
+#   max at 95% 0.5472, zero parameters at or above 3.5. Its control (ARM 7,
+#   20260909_220443_cloe58_widebase, standard c and no injection) scored max 10.0430,
+#   median 6.7458, with 48 of 58 parameters at or above 3.5.
+#
+# WHAT ACTUALLY CHANGES HERE
+# Read the baseline's settings from its RUN DIRECTORY, not from
+# client_dev/input/gaussian_cloe58_reinject_n10.yaml. That input file has been edited
+# since the run: it now reads n_walkers 432 and thin 5, while the comment above those
+# values still explains why 216 was chosen, and the run directory's own copy -- the one
+# that actually executed -- says 216 with no thin key at all. Confirmed independently:
+# dev_surrogate_chain.py reads the run-dir config and reports 216 walkers when it
+# re-chains that run.
+#
+# So the baseline ran 216 walkers at thin 1, and all five optimisations are genuinely new
+# here, exactly as in the 31D comparison:
+#
+#   sampling.n_walkers 216 -> 432     ~2x the effective sample size at unchanged tau
+#   sampling.thin 1 -> 5              chain buffer 2.80 GiB -> 1.12 GiB (2.5x smaller)
+#   sampling.chunk_size 5000 -> 1000  no measured speed cost, 5x less graph-internal memory
+#   acquisition.batch_size 1 -> 10    batched density-deficit selection, 12.6x faster on
+#                                     a large request, per-parameter KS < 0.01 vs exact
+#   training.lr_schedule  -> plateau  annealing under the schedule-gated stopper
+#
+# EXPECT, THEREFORE, much the same shape of result as the 31D ridge: a sampling gain of
+# roughly 1.3x at double the walkers, a training gain from annealing, and a chain buffer
+# 2.5x smaller. The 58D target is 60000 steps rather than 100000 and its baseline carried
+# a 250-epoch fixed patience tail, so the epoch ratio should again exceed the best-epoch
+# ratio -- compare epochs RUN, not best-epochs.
+#
+# UNCHANGED, deliberately: the +/-10 sigma design, 2000 initial points, 2000 appended per
+# iteration, acquisition.n_inject 100 (re-injection at EVERY iteration, the arm the 58D
+# notes found scales best with design width -- 9.3x better than its control at it15), the
+# msre loss with its ESS floor, the 5x512 alsing architecture, n_steps 60000, and seed 42.
+#
+# SCORING NEEDS NO REFERENCE CHAIN. This target is a closed-form Gaussian, so
+# credible_metric.py --analytic scores against exact marginal intervals mu_i +/- z_p
+# sigma_i. That removes the reference's counting noise entirely -- the floor that
+# HANDOVER7 section 1.1 showed was understated by 7-11x when a sampled reference is used.
+# The +/-10 sigma box does not disturb this: the 68% and 95% bounds sit at ~1-2 sigma,
+# far inside the box, so the truncation is irrelevant at these levels.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/gaussian_cloe58.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+  n_inject: 100          # injection after the initial design
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  n_inject: 100          # RE-INJECTION: re-drawn every iteration from the full fit
+  batch_size: 10         # batched selector
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000         # ceiling; the schedule-gated stopper decides
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1    # dynamic c
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250          # UNUSED while lr_schedule is 'plateau'
+  lr_schedule: plateau
+  lr_factor: 0.3
+  lr_patience: 75        # an extrapolation, not a measured optimum -- see config/config.py.
+                         # The 31D run gave a concrete reason to test 50: the annealed
+                         # schedule's floor makes it LOSE epochs to fixed-rate stopping at
+                         # late iterations. Watch for the same inversion here.
+  lr_min: 1.0e-6
+  lr_grace: 100
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 432         # baseline ran 216 (per its run-dir config, not the edited input)
+  n_steps: 60000         # unchanged from the baseline
+  thin: 5                # baseline had no thin key, i.e. thin 1
+  burn_in: 5000
+  chunk_size: 1000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16     # iterations 0..15; launch with -i 16, which disables the criterion
+
+seed: 42

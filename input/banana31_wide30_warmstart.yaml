@@ -1,0 +1,90 @@
+# 31D parabolic ridge, it0 injection only, CONSTANT learning rate, WARM-STARTED networks.
+#
+# The 31D companion to gaussian_cloe58_reinject_n10_warmstart.yaml. Warm-starting was
+# measured on individual 31D training sets -- 4 to 6 times fewer epochs to reach cold's
+# best validation loss, and equal-or-better dCM at iteration 10 -- but never across a
+# whole run on this target, where c re-solves each iteration and the loss target moves.
+#
+# THE BASELINE IT IS COMPARED AGAINST
+#   client_dev/results/20260914_190104_b31_inject15, spliced with
+#   20260907_183811_b31_w30_inject for iterations 0-4 (identical configs, verified).
+#   17,724 best-epochs, 21,724 run (EarlyStopping(250) adds 250 per iteration), 9.52 h.
+#   Scored against results/reference_exact_banana31 at iteration 15: median dCM 0.0209,
+#   max excluding x_30 0.0754, max at 95% 0.0399.
+#
+# THIS CONFIG MATCHES THAT BASELINE EXACTLY EXCEPT FOR warm_start, read from its RUN
+# DIRECTORY rather than from any input file: 216 walkers, no thinning, exact sequential
+# selector, n_steps 100000, constant 1e-4 with patience 250, +/-30 sigma design, 2000
+# initial and 2000 appended per iteration, injection at iteration 0 only, seed 42.
+#
+# NOTE the 31D target is scored against a SAMPLED reference, not an analytic one:
+# credible_metric.py --analytic needs a Cobaya gaussian with inline mean and cov, and the
+# banana is an external function with no closed-form credible intervals under the
+# -0.5 (x_28 x_29)^2 penalty. results/reference_exact_banana31 holds 1,000,000 exact
+# i.i.d. draws across 2 files for this purpose.
+#
+# WHY CONSTANT AND NOT ANNEALED. Annealing is not used here even though the 31D ridge is
+# where it looked good: at a matched budget on data_it_15.csv it gave 2.1x lower
+# validation loss and 2.4x better dCM. On 58D iteration 0 it failed badly and
+# cascaded through the whole run, and the default was reverted to 'none' on 16 September.
+# Holding the rate constant here keeps this run a single-variable test of warm_start
+# against its own baseline, rather than a two-variable one.
+#
+# WHAT TO WATCH
+#   * iteration 0 is the control -- nothing to inherit, so it must reproduce the
+#     baseline's fixed-rate result.
+#   * on 58D the effect from iteration 1 was far larger than predicted: 3.9x fewer
+#     epochs and 15-18x better validation loss by iteration 3. Whether that transfers to
+#     a curved, non-Gaussian target is the question this run answers.
+#   * HANDOVER7 section 10.10's objection: inherited weights are optimal for the
+#     PREVIOUS iteration's loss and c re-solves each iteration. If it bites, expect
+#     val_loss to degrade progressively rather than fail outright.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/banana_planck31_wide.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 30.0
+  n_inject: 100          # iteration 0 only -- no acquisition.n_inject key
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  batch_size: 1          # exact sequential selector, as the baseline ran it
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1    # dynamic c
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250          # USED: lr_schedule is 'none', so this is the stopping rule
+  lr_schedule: none      # constant 1e-4
+  warm_start: true       # THE VARIABLE UNDER TEST
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 216         # as the baseline ran it
+  n_steps: 100000        # as the baseline ran it
+  burn_in: 5000
+  chunk_size: 5000       # as the baseline ran it
+  # no `thin` key: the baseline did not thin, and the chain feeds acquisition
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16     # iterations 0..15; launch with -i 16, which disables the criterion
+
+seed: 42

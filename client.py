@@ -323,6 +323,44 @@ def main():
                 n_neurons=cfg.model.n_neurons,
                 activation=cfg.model.activation,
             )
+
+            # ---- Warm start ----
+            # Inherit the previous iteration's learned function, but NOT its scalers:
+            # build_model above has already adapted the input Normalization and the
+            # output TargetDenormalization to THIS iteration's data, and those are
+            # statistics that move as the training set grows. Only the trainable
+            # weights are transferred. See config/config.py::TrainingConfig.warm_start.
+            if cfg.training.warm_start and iteration > 0:
+                previous_model_path = (
+                    run.trained_models_dir / f"model_it_{iteration - 1}.keras"
+                )
+                if previous_model_path.exists():
+                    previous_model = load_model(previous_model_path)
+                    if [w.shape for w in previous_model.trainable_weights] == [
+                        w.shape for w in model.trainable_weights
+                    ]:
+                        for new_weight, old_weight in zip(
+                            model.trainable_weights, previous_model.trainable_weights
+                        ):
+                            new_weight.assign(old_weight)
+                        print_master(
+                            f"Warm start: inherited {len(model.trainable_weights)} weight "
+                            f"tensors from iteration {iteration - 1} "
+                            f"(scalers re-adapted to iteration {iteration})"
+                        )
+                    else:
+                        # A changed architecture makes the weights meaningless rather
+                        # than merely stale, so fall back loudly instead of guessing.
+                        print_master(
+                            "Warm start SKIPPED: weight shapes differ from iteration "
+                            f"{iteration - 1}; training from a random initialisation"
+                        )
+                    del previous_model
+                else:
+                    print_master(
+                        f"Warm start: no model at {previous_model_path.name}, "
+                        "training from a random initialisation"
+                    )
             loss = build_loss(
                 name=cfg.training.loss,
                 sigma_level=cfg.training.sigma_level,

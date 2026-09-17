@@ -1,0 +1,97 @@
+# 58D Euclid/CLOE Gaussian at +/-10 sigma, dynamic c + re-injection at EVERY iteration,
+# CONSTANT learning rate, WARM-STARTED networks.
+#
+# THE QUESTION: does warm-starting make a practical difference across a full iterative
+# loop? It was measured on single training sets at 31D -- 4 to 6 times fewer epochs to
+# reach cold's best validation loss, and equal-or-better dCM at iteration 10 -- but never
+# across a whole run, where the training set changes every iteration and c re-solves.
+#
+# THE BASELINE IT IS COMPARED AGAINST
+#   client_dev/results/20260909_125813_cloe58_wide (ARM 6 of the 58D notes): 19,187
+#   best-epochs, 7.97 h, and against the exact analytic posterior median dCM 0.2551 with
+#   ZERO of 58 parameters above 3.5 at iteration 15.
+#
+# THIS CONFIG MATCHES THAT BASELINE EXACTLY EXCEPT FOR ONE THING: warm_start.
+# 216 walkers, no thinning, batch_size 1, chunk_size 5000, constant lr 1e-4 with
+# patience 250 -- all as the baseline ran them, read from its RUN DIRECTORY rather than
+# from the input file of the same name, which has since been edited and no longer
+# describes what was executed. A single-variable comparison is worth more here than a
+# faster one.
+#
+# WHY THE LEARNING RATE IS CONSTANT, not annealed. Annealing was measured on this exact
+# iteration-0 training set over three seeds each:
+#
+#     fixed 1e-4   1.4977e-02  1.8308e-02  1.4500e-02     spread 1.26x
+#     annealed     3.2887e-02  1.3641e-01  3.8296e-02     spread 4.15x
+#
+# The sets do not overlap -- the worst fixed run beats the best annealed run by 1.80x,
+# complete separation at one-sided p = 0.05. Annealing is also four times less
+# predictable here, and its worst seed came in 9.1x above the bar with its first
+# reduction at epoch 86. On a sparse design the plateau detector fires on what is
+# actually a wide noise ball, and the rate collapses before the optimiser has descended.
+#
+# That failure cascaded through the production run: a 2.2x worse iteration-0 emulator ->
+# an acquisition that DISPERSED (spread 1.32 against the baseline's 0.18) -> a
+# reproducible iteration-1 training failure -> a confidently displaced posterior by
+# iteration 10. The acquisition replay cleared the walker count, the thinning, the chain
+# length and the batched selector; swapping only the iteration-0 emulator moved the
+# spread from 1.203 to 0.108.
+#
+# WHAT TO WATCH
+#   * epochs per iteration against the baseline's. Warm-starting should cut the
+#     from-scratch descent, which is where over half of every iteration goes.
+#   * the iteration-0 emulator: warm_start cannot help there (nothing to inherit), so
+#     iteration 0 should reproduce the fixed-rate result, ~1.5e-02.
+#   * whether inherited weights drift as c re-solves each iteration -- the objection
+#     HANDOVER7 section 10.10 raised against warm-starting and the reason it was never
+#     tried across a full loop.
+likelihood:
+  wrapper: cobaya
+  input: input/cobaya/gaussian_cloe58.yaml
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 10.0
+  n_inject: 100          # injection after the initial design
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  n_inject: 100          # RE-INJECTION: re-drawn every iteration from the full fit
+  batch_size: 1          # exact sequential selector, as the baseline ran it
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1    # dynamic c
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250          # USED: lr_schedule is 'none', so this is the stopping rule
+  lr_schedule: none      # constant 1e-4 -- see the seed comparison above
+  warm_start: true       # THE VARIABLE UNDER TEST
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 216         # as the baseline ran it
+  n_steps: 60000
+  burn_in: 5000
+  chunk_size: 5000       # as the baseline ran it
+  # no `thin` key: the baseline did not thin, and the chain feeds acquisition
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16     # iterations 0..15; launch with -i 16, which disables the criterion
+
+seed: 42

@@ -148,11 +148,105 @@ class TrainingConfig:
     # 75 IS AN EXTRAPOLATION, NOT A MEASUREMENT. The factorial establishes 25 << 50; it
     # does not establish 75 > 50. It is the cautious side of a known failure direction.
     # If it is ever measured, record the result here.
-    lr_schedule: str = "plateau"
+    # DEFAULT REVERTED TO 'none' ON 16 SEPTEMBER 2026 -- constant learning rate.
+    #
+    # Annealing remains available and is still 2.1x better on validation loss at a
+    # matched budget on a DENSE training set (the section 6.2 result, measured on
+    # data_it_15.csv with 32,100 points). But it is unsafe on a SPARSE one, and the
+    # initial design of any high-dimensional run is sparse by construction.
+    #
+    # Measured on 58D iteration 0 (2,100 points, c inflated 1008x), three seeds each:
+    #
+    #     fixed 1e-4   1.4977e-02   1.8308e-02   1.4500e-02     spread 1.26x
+    #     annealed     3.2887e-02   1.3641e-01   3.8296e-02     spread 4.15x
+    #
+    # The two sets do not overlap: the worst fixed run beats the best annealed run by
+    # 1.80x, complete separation at one-sided p = 0.05. Annealing is also four times
+    # less predictable, and its worst seed landed 9.1x above the fixed-rate result with
+    # its first reduction at epoch 86.
+    #
+    # WHY. On sparse data val_loss is a wide noise ball -- at 58D iteration 0 it swings
+    # a factor of two between neighbouring epochs (3.29e-02 at 520, 6.28e-02 at 580).
+    # The plateau detector reads that as convergence and reduces the rate, after which
+    # improvement is slower still, so the next plateau fires sooner and the rate
+    # collapses. The best epoch is then a lucky dip caught by restore_best_weights
+    # rather than a settled minimum.
+    #
+    # THE CONSEQUENCE IS NOT LOCAL. A 2.2x worse iteration-0 emulator produced an
+    # acquisition that DISPERSED instead of contracting (selected-point spread 1.32
+    # against the baseline's 0.18), which produced a reproducible iteration-1 training
+    # failure, which contaminated every later training set. By iteration 10 the 58D
+    # posterior sat entirely outside the truth's 95% contour in every cosmological
+    # parameter, with 24 of 58 parameters above dCM 3.5 against the fixed-rate arm's 7.
+    # An offline replay cleared the walker count, thinning, chain length and the batched
+    # selector; swapping only the iteration-0 emulator moved the spread 1.203 -> 0.108.
+    #
+    # Set 'plateau' deliberately, on a target whose initial design is known to be dense.
+    lr_schedule: str = "none"
     lr_factor: float = 0.3
     lr_patience: int = 75
     lr_min: float = 1e-6
     lr_grace: int = 100
+
+    # Warm-starting: initialise iteration N's network from iteration N-1's trained
+    # weights instead of at random. OFF by default -- it changes results, and the
+    # evidence below is from one target.
+    #
+    # The scalers are NOT inherited. build_model adapts an input Normalization to the
+    # current inputs and builds a TargetDenormalization from the current targets; both
+    # are data statistics that move as the training set grows. Only the 22 trainable
+    # weight tensors are transferred, so the learned function is inherited while
+    # everything data-dependent is rebuilt for the current iteration. Carrying the
+    # scalers over instead ("warm-continue") was measured and is NOT better: it starts
+    # far closer (initial val_loss 4.97e-04 against cold's converged 3.96e-04 at 31D
+    # iteration 10) but finishes no better, and it accumulates stale statistics.
+    #
+    # MEASURED on the 31D ridge, cold against warm-transfer, same data and split:
+    #
+    #     iteration   epochs to reach cold's best val_loss      epochs run
+    #            1    164 vs 1022  (6.2x fewer)                 538 vs 1027
+    #            5    251 vs 1038  (4.1x fewer)                 425 vs 1044
+    #           10      2 vs  722  (warm beat cold's FINAL      402 vs  722
+    #                               result in two epochs)
+    #
+    # Credible metric at iteration 10: median 0.0187 against cold's 0.0198 (a null --
+    # both sit at the ~0.018 measurement floor), max excluding x_30 0.0431 against
+    # 0.1066. So: equal-or-better accuracy for roughly half the epochs. At iteration 1
+    # the dCM comparison was mixed and every arm was far from converged, so the safe
+    # claim is "as accurate, much cheaper", not "more accurate".
+    #
+    # It also reduces exposure to a schedule that anneals too early, because a warm
+    # network does not need the long from-scratch descent in the first place.
+    #
+    # DEFAULT TURNED ON 17 SEPTEMBER 2026, on two full runs each matched to its own
+    # baseline on every setting except this one:
+    #
+    #     target            epochs run           it15 median dCM      it15 max
+    #     58D CLOE +/-10s   7,852 vs 23,187      0.2318 vs 0.2551     0.6523 vs 1.0598
+    #     31D ridge         8,539 vs 21,724      0.0081 vs 0.0209     0.0565 vs 0.0754
+    #
+    # i.e. 2.95x and 2.54x fewer epochs at equal or better accuracy. On 58D iteration 10
+    # the worst parameter came in at 1.1704 against the baseline's 9.4522, with zero of
+    # 58 parameters above dCM 3.5 where the baseline had seven -- roughly the baseline's
+    # ITERATION-15 quality reached at iteration 10.
+    #
+    # Iteration 0 cannot be warm started, which makes it a free control: with nothing to
+    # inherit it must reproduce the baseline exactly, and it did on both runs to four
+    # digits (58D 2071 epochs at 1.4977e-02; 31D 1697 at 6.8004e-04). That is what
+    # confirms warm_start was the only active variable in each comparison.
+    #
+    # THE OBJECTION DID NOT MATERIALISE. c re-solves every iteration, so inherited
+    # weights are optimal for a different loss; the feared signature was val_loss
+    # degrading as the weights age. It improved instead. TargetDenormalization is
+    # rebuilt from the current target distribution each iteration, so the output is
+    # rescaled before a single gradient step; what the weights carry is the SHAPE of the
+    # function, which changes slowly.
+    #
+    # KNOWN BLEMISH: the 31D run is not monotone -- its iteration-10 median (0.0565) is
+    # worse than both its own iteration 5 and the baseline's iteration 10, though both
+    # sit near the ~0.018-0.026 measurement floor and its maxima are better at both
+    # iterations. One seed per run. Set warm_start: false to restore cold starts.
+    warm_start: bool = True
 
     @classmethod
     def from_dict(cls, d):
@@ -165,7 +259,8 @@ class TrainingConfig:
             validation_split=float(d["validation_split"]),
             patience=int(d["patience"]),
             msre_ess_floor=float(d.get("msre_ess_floor", 0.1)),
-            lr_schedule=str(d.get("lr_schedule", "plateau")),
+            warm_start=bool(d.get("warm_start", True)),
+            lr_schedule=str(d.get("lr_schedule", "none")),
             lr_factor=float(d.get("lr_factor", 0.3)),
             lr_patience=int(d.get("lr_patience", 75)),
             lr_min=float(d.get("lr_min", 1e-6)),

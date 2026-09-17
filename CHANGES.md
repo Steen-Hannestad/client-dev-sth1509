@@ -391,8 +391,11 @@ training:
   validation_split: 0.1    # (required)
   patience: 250            # (required) UNUSED while lr_schedule is 'plateau'
   msre_ess_floor: 0.1      # default 0.1, i.e. ON. 0.0 restores the original loss.
-  lr_schedule: plateau     # default 'plateau'. 'none' restores a fixed rate with the
-                           # plain `patience` EarlyStopping.
+  lr_schedule: none        # default 'none' since 17 Sep: a CONSTANT rate with the
+                           # plain `patience` EarlyStopping. 'plateau' enables annealing,
+                           # which is unsafe on sparse designs -- see UPGRADING.md 1.2.
+  warm_start: true         # default true since 17 Sep. Initialise iteration N from
+                           # iteration N-1's trained weights. See UPGRADING.md 1.3.
   lr_factor: 0.3           # default 0.3
   lr_patience: 75          # default 75, epochs of stalled val_loss before a reduction
   lr_min: 1.0e-6           # default 1e-6, the floor

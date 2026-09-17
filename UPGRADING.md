@@ -4,6 +4,8 @@ Every change in this version relative to the upstream CLiENT it was forked from,
 does to your results, and what you have to do about it.
 
 **Read §1 first.** Four changes are on by default and three of them change results.
+Annealing (§1.2) was turned OFF on 17 September after it failed badly on a sparse
+58D design; warm-starting (§1.3) replaced it as the training-side default.
 
 Depth lives elsewhere and is cross-referenced throughout: `CHANGES.md` for the iterative
 algorithm with the experiments behind it, `PERFORMANCE.md` for the speed and memory work
@@ -33,7 +35,33 @@ Every run prints what it did, so you can always see whether it was active:
 [msre] ESS floor 0.10: c 30.0 -> 4357.6 log-units (x145.04); ESS 53.3 -> 210.0 of 2100
 ```
 
-### 1.2 `training.lr_schedule: plateau` — learning-rate annealing
+### 1.2 `training.lr_schedule: none` — annealing, now OFF by default
+
+> **DEFAULT REVERTED TO `none` ON 17 SEPTEMBER 2026.** Everything below was measured on a
+> *dense* training set and still holds there. On a **sparse** one it fails, and the initial
+> design of any high-dimensional run is sparse by construction. Measured on 58D iteration 0
+> (2,100 points), three seeds each:
+>
+> | | seed 42 | seed 43 | seed 44 | spread |
+> |---|---:|---:|---:|---:|
+> | fixed 1e-4 | 1.4977e-02 | 1.8308e-02 | 1.4500e-02 | 1.26× |
+> | annealed | 3.2887e-02 | 1.3641e-01 | 3.8296e-02 | 4.15× |
+>
+> The sets do not overlap — the worst fixed run beats the best annealed run by 1.80×,
+> complete separation at one-sided p = 0.05 — and annealing is four times less predictable.
+>
+> **The consequence is not local.** On sparse data `val_loss` is a wide noise ball (a factor
+> of two between neighbouring epochs), the plateau detector reads that as convergence, and
+> the rate collapses. A 2.2× worse iteration-0 emulator then produced an acquisition that
+> *dispersed* instead of contracting (selected-point spread 1.32 against 0.18), a
+> reproducible iteration-1 training failure, and by iteration 10 a posterior sitting
+> entirely outside the truth's 95% contour with 24 of 58 parameters above ΔCM 3.5 against
+> the fixed-rate arm's 7. An offline replay cleared the walker count, thinning, chain length
+> and the batched selector; swapping only the iteration-0 emulator moved the spread
+> 1.203 → 0.108.
+>
+> Set `lr_schedule: plateau` deliberately, on a target whose initial design is known to be
+> dense.
 
 **Changes results, for the better — and it is the only change tested in this project where
 a training-side gain carried through to the credible metric.** The rate is reduced by
@@ -132,7 +160,48 @@ this run's chains carry ~2× the effective sample size, which lowers its own flo
 prediction. 1.35× faster per pass at double the walkers, ~2× the effective sample size, and
 2.5× less chain memory. The training-side contribution is real but smaller than advertised.
 
-### 1.3 `acquisition.batch_size: 10` — batched candidate selection
+### 1.3 `training.warm_start: true` — inherit the previous iteration's weights
+
+**Changes results, for the better, and is the first training-side change tested here that
+helps on BOTH targets.** Iteration *N* starts from iteration *N−1*'s trained weights instead
+of a random initialisation.
+
+Two full runs, each matched to its own baseline on every setting except this one:
+
+| target | epochs run | it15 median ΔCM | it15 max |
+|---|---|---|---|
+| 58D CLOE ±10σ | **7,852 vs 23,187** (2.95×) | **0.2318** vs 0.2551 | **0.6523** vs 1.0598 |
+| 31D ridge | **8,539 vs 21,724** (2.54×) | **0.0081** vs 0.0209 | **0.0565** vs 0.0754 |
+
+On 58D iteration 10 the worst parameter came in at **1.1704 against the baseline's 9.4522**,
+with **zero** of 58 parameters above ΔCM 3.5 where the baseline had seven — roughly the
+baseline's *iteration-15* quality reached at *iteration 10*.
+
+**Only the trainable weights are inherited.** `build_model` re-adapts the input
+`Normalization` and rebuilds the output `TargetDenormalization` from the *current*
+iteration's data; both are statistics that move as the training set grows. Carrying them
+over as well ("warm-continue") was measured and is not better — it starts far closer
+(initial `val_loss` 4.97e-04, already beating a cold network's *converged* 3.96e-04) and
+finishes no better, while accumulating stale statistics.
+
+**Iteration 0 cannot be warm started**, which makes it a free control: with nothing to
+inherit it must reproduce the baseline exactly. It did on both runs to four digits (58D
+2071 epochs at 1.4977e-02; 31D 1697 at 6.8004e-04).
+
+**The obvious objection did not materialise.** `c` re-solves every iteration, so inherited
+weights are optimal for a different loss; the feared signature was `val_loss` degrading as
+they age. It improved instead — `TargetDenormalization` is rebuilt from the current target
+distribution each iteration, so the output is rescaled before a single gradient step, and
+what the weights carry is the *shape* of the function, which changes slowly.
+
+*Known blemish:* the 31D run is not monotone — its iteration-10 median (0.0565) is worse
+than both its own iteration 5 and the baseline's iteration 10, though both sit near the
+~0.018–0.026 measurement floor and its maxima are better at both iterations. One seed per
+run.
+
+*To restore cold starts:* `warm_start: false`.
+
+### 1.4 `acquisition.batch_size: 10` — batched candidate selection
 
 **Changes which points are selected, but not their distribution.** The density-deficit
 selector used to commit one candidate per pass over the candidate pool. It now commits ten,
@@ -153,7 +222,7 @@ approximation's error grows with `batch_size` and with how concentrated the defi
 landscape is. Beyond about 50 it also gets *slower*, because the pool × batch distance
 block leaves cache. `PERFORMANCE.md` §1 has the check to repeat on a new target.
 
-### 1.4 Sampler memory: the preallocated chain buffer
+### 1.5 Sampler memory: the preallocated chain buffer
 
 **Does not change results.** The chain used to be accumulated as per-chunk tensors,
 concatenated, then copied again, with all three alive at once — a high-water mark of
