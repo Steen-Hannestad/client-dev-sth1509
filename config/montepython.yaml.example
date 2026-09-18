@@ -1,0 +1,18 @@
+# Copy this to config/montepython.yaml and edit the two paths.
+#
+# likelihood/montepython.py reads this file (default path: config/montepython.yaml) and
+# cannot run without it. The real file is gitignored because both entries are absolute
+# paths specific to one machine.
+#
+#   conf: the MontePython .conf file. It defines path['cosmo'] (a CLASS checkout) and
+#         path['clik'] (a built plc-3.x). MontePython uses path['cosmo'] only for the
+#         version string and the BBN table -- the classy that actually gets imported is
+#         whichever one is on PYTHONPATH, because MontePython's own classy discovery
+#         looks for a directory name containing sys.version and never matches one.
+#         That is what lets env_planck.sh select CLASS++ without touching this file.
+#
+#   path: the INNER montepython package directory, i.e. the one containing initialise.py,
+#         not its parent.
+
+conf: /path/to/client_public/config/default.conf
+path: /path/to/montepython_public/montepython

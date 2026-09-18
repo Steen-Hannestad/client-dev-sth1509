@@ -5,7 +5,8 @@ written for the previous version parses unchanged and, with the single exception
 produces identical behaviour.
 
 Contents: §1 the loss, §2 Gaussian peak injection, §3 the sampler, §4 reproducibility,
-§5 new targets, §6 configuration reference, §7 what is not established.
+§5 new targets (including the first real-data one, Planck 2018 ΛCDM), §6 configuration
+reference, §7 what is not established, §8 MPI idle-waiting.
 
 ---
 
@@ -351,6 +352,48 @@ the true maximum:
   ceiling; continuing to iteration 10–15 reached 59× (±4σ) and 91× (±10σ). See
   `client_public/docs/client_58d_euclid.pdf`.
 
+### Real Planck 2018 — the first non-analytic target
+
+`input/planck2018_lcdm.yaml` (and `planck2018_lcdm_smoke.yaml`, a 400-evaluation
+end-to-end check) run ΛCDM against **Planck 2018 TTTEEE + lowl + lowE + lensing + BAO**
+through the **MontePython** wrapper, not cobaya. 27 dimensions: 6 cosmological and the
+21 nuisance parameters the `.param` file leaves varying. MontePython's `compute_lkl`
+includes its Gaussian nuisance priors, so the training target is a log-posterior, as on
+the analytic runs.
+
+The wrapper needs `config/montepython.yaml`, which **did not exist in any tree** —
+`likelihood/montepython.py` has always defaulted to that path and nothing ever created
+it, which is why HANDOVER's "sanity-check the montepython path" item stayed open. It is
+now shipped, pointing at the MontePython package directory and at a `.conf` giving
+`path['cosmo']` and `path['clik']`.
+
+**Choosing `n_sigma` is not the same problem as on the banana.** The 1σ values in the
+`.param` file are *marginal* proposal widths, and the Planck posterior is strongly
+correlated, so a hypercube of marginal widths sits off the degeneracy directions and
+gets deep quickly. A 24-point Latin hypercube at each width, depth below the fiducial
+best fit in log-units:
+
+| n_sigma | best | median | worst | finite |
+|---:|---:|---:|---:|---:|
+| 2 | 83.8 | 332.6 | 1242.7 | 24/24 |
+| **3** | **161.2** | **859.3** | **4303.1** | **24/24** |
+| 5 | 889.7 | 2658.9 | 10915.0 | 24/24 |
+| 10 | 2167.9 | 9172.5 | 28459.3 | 24/24 |
+
+±3σ is shipped: a 859-log-unit median anchor error is roughly the ±30σ 29D banana's
+4041 scaled to 27 dimensions, i.e. squarely in the regime §1's ESS floor exists for, and
+it duly fires — measured on the smoke run, `c` 27.3 → 58.8 log-units (×2.16), ESS 5.5 →
+20.0 of 200. **CLASS did not fail once in 96 draws out to ±10σ**, so unlike the wide
+banana boxes there is no risk of the design being decimated by non-finite targets.
+
+There is **no reference chain and no analytic truth**, so the credible metric is not
+available on this target. Judge it on validation loss, the drift metric, resampling
+acceptance and max(τ), and against the published Planck 2018 contours.
+
+**Cost**, 8-core M3, one thread per rank: 1.9 s per evaluation with CLASS++ 26.0.0,
+3.6 evaluations/s measured across 8 MPI ranks, 0.60 GB resident per rank. Stock CLASS
+3.3.4 is 7.3 s per evaluation — 3.9× slower.
+
 ## 6. Configuration reference
 
 Every key, with its default. `(required)` means the loader raises if it is absent.
@@ -469,3 +512,102 @@ Stated explicitly so nobody has to rediscover it:
   badly-mixed surrogate two chains from the same model differ by half; on a well-mixed one
   they agree to a fraction of a percent. Treat drift differences under ~2× as uninformative
   unless τ is small relative to the chain length.
+
+---
+
+## 8. MPI: idle workers no longer spin against the trainer
+
+**`utils/mpi_utils.py`** (`bcast_idle`), **`client.py`**. On by default, no config key.
+
+### The problem
+
+Only rank 0 trains, samples and selects. The workers take part in exactly one thing —
+`broadcast_and_evaluate` — and between two evaluation phases they sit in a blocking MPI
+collective. A blocking MPI call **polls the network in a tight loop**, so each waiting
+rank holds a core at 100%. Under Open MPI's defaults that is seven cores of an eight-core
+machine spinning against rank 0's multi-threaded Keras training, for the whole of
+training plus sampling plus acquisition — which is most of an iteration once the
+likelihood is cheap.
+
+Measured directly: rank 0 training a 5×512 network for 30 epochs while the other seven
+ranks waited for it.
+
+| configuration | rank-0 training | penalty |
+|---|---:|---:|
+| 1 rank, nobody waiting | 9.15 s | 1.00× |
+| 8 ranks, blocking collective | **20.03 s** | **2.19×** |
+| 8 ranks, blocking + `mpi_yield_when_idle=1` | 11.36 s | 1.24× |
+| 8 ranks, `bcast_idle` | 10.30 s | 1.13× |
+| 8 ranks, `bcast_idle` + `mpi_yield_when_idle=1` | 9.39 s | 1.03× |
+
+The training phase was costing **2.19× what it should**, and nothing reported it: every
+rank looked busy in `top`, because every rank *was* busy — doing nothing.
+
+### The fix
+
+`bcast_idle` replaces the blocking wait with a non-blocking receive polled at 50 ms with
+`time.sleep` in between. It is used at the two long waits per iteration: the sample count
+at the head of `broadcast_and_evaluate`, and the convergence decision in `client.py`.
+Short collectives keep plain `bcast` — sleeping costs a poll interval, which is only
+worth paying against a wait measured in minutes.
+
+Set **`export OMPI_MCA_mpi_yield_when_idle=1`** as well. It is complementary rather than
+redundant: it also covers the short per-batch waits inside the evaluation loop, which
+`bcast_idle` cannot reach, and the two together land within 3% of the uncontended time.
+It is an Open MPI setting; other implementations have their own spelling.
+
+### The second one: workers spin through the LAST iteration
+
+`bcast_idle` parks the workers at the two waits *inside* an iteration, but on the final
+iteration there is no acquisition left to park them in. They leave the loop while rank 0
+still has training, sampling and the convergence check to do, and drop straight into
+`MPI_Finalize` — whose barrier spins. Seven ranks then contend with the last iteration's
+training exactly as they did before any of this.
+
+It is not subtle when you see it: on a 150-epoch smoke run **one epoch took 954 seconds**.
+`client.py` now ends with a `bcast_idle(True)` that the master reaches only once it is
+genuinely finished. Longest epoch afterwards: 3 s.
+
+This has been degrading the final iteration of **every** MPI run, the 31D and 58D work
+included.
+
+### Dynamic scheduling: implemented, measured, and OFF
+
+The evaluation loop scatters `max(1, n_ranks)` points and gathers after every single
+one, so each batch costs the *slowest* rank. `CLIENT_MPI_SCHEDULE=dynamic` replaces that
+with rank 0 handing out indices on demand. It is correct — `data_it_0.csv` comes out
+bit-identical to the static path — and on genuinely uneven work it wins (0.98 s against
+1.36 s on a synthetic 8× spread).
+
+**It is off by default because the premise turned out to be false on this machine.** The
+claim was that the M3's four efficiency cores were holding every batch back. The per-rank
+measurement over a 640-point interleaved A/B on the real Planck likelihood refutes it:
+
+```
+rank 1..7 seconds per evaluation:  3.28  3.27  3.30  3.27  3.31  3.28  3.28
+```
+
+Homogeneous to ±0.6%. No fast rank, no slow rank, nothing for balancing to recover — and
+reserving rank 0 as a dispatcher then costs an eighth of the machine for nothing.
+
+The A/B could not separate the arms either:
+
+| arm | round 1 | round 2 |
+|---|---:|---:|
+| static | 120.7 s (1.33/s) | 47.6 s (3.36/s) |
+| dynamic | 66.0 s (2.43/s) | 54.4 s (2.94/s) |
+
+Within-arm spread is 2.5× and dynamic's whole range sits **inside** static's. Per §7's own
+rule, overlapping sets are not a difference. What actually moved the production run from
+3.63 to 1.50 evaluations/s was that same wander — a solo evaluation is 1.87 s, one of
+eight concurrent ones is 3.3 s or worse — not imbalance between ranks.
+
+The residual case for dynamic is real but small: a batch costs the max of its points and
+CLASS varies ±10% point to point, so static gives up ~13%, against the 12.5% lost to a
+dedicated dispatcher. A wash. It would only pay if rank 0 evaluated as well as dispatched,
+which needs prefetching and was judged not worth the deadlock risk.
+
+**If you enable it, note it picks up cheap likelihoods badly**: per-point dispatch costs
+an MPI round trip, and the analytic banana and Gaussian targets evaluate in microseconds.
+`_use_dynamic_schedule` records the two conditions (≥4 ranks, ≥20 ms per evaluation) that
+would have to hold; nothing calls it on the default path.

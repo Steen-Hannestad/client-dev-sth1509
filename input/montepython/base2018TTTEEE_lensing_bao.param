@@ -35,7 +35,13 @@ data.over_sampling=[1, 5]
 
 data.parameters['omega_b']      = [  2.2377,   None, None,      0.015, 0.01, 'cosmo']
 data.parameters['omega_cdm']    = [ 0.12010,   None, None,     0.0013,    1, 'cosmo']
-data.parameters['100*theta_s']  = [ 1.04110,   None, None,    0.00030,    1, 'cosmo']
+# 1.04110 was a theta_MC-like value, but CLASS samples the EXACT acoustic scale
+# theta_s, a different quantity. Measured with CLASS at the Planck 2018 best fit
+# (H0=67.66): 100*theta_s = 1.041888, i.e. 2.6 sigma above the old centre.
+# With n_sigma=3 the old centre put the box top at 1.04200, and the iteration-5
+# posterior of run 20260917_102225_planck_lcdm truncated hard against it -- both
+# its 68% and 95% upper limits came out exactly 1.04200. Re-centred 17 Sep 2026.
+data.parameters['100*theta_s']  = [ 1.04189,   None, None,    0.00030,    1, 'cosmo']
 data.parameters['ln10^{10}A_s'] = [  3.0447,   None, None,      0.015,    1, 'cosmo']
 data.parameters['n_s']          = [  0.9659,   None, None,     0.0042,    1, 'cosmo']
 data.parameters['tau_reio']     = [  0.0543,  0.004, None,      0.008,    1, 'cosmo']

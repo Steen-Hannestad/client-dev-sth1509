@@ -1,0 +1,117 @@
+# LambdaCDM against real Planck 2018 data. 27 dimensions: 6 cosmological + 21 nuisance.
+#
+# THE TARGET
+#   Planck_highl_TTTEEE + Planck_lowl_EE + Planck_lowl_TT + Planck_lensing
+#   + bao_boss_dr12 + bao_smallz_2014, through the MontePython wrapper
+#   (input/montepython/base2018TTTEEE_lensing_bao.param). MontePython's compute_lkl
+#   returns the likelihood PLUS its Gaussian nuisance priors on A_planck, calib_100T
+#   and calib_217T, so the training target is a log-posterior, as on the analytic runs.
+#
+#   The 21 varying nuisance parameters are the ones with a non-zero 1-sigma in the
+#   .param file; the 22 held fixed there (galf_EE_*, A_sbpx_*, A_cnoise_*, calib_*P,
+#   A_pol, cib_index) stay fixed and never reach the emulator.
+#
+# BEFORE RUNNING
+#   config/montepython.yaml must point at the MontePython package directory and at a
+#   .conf giving path['cosmo'] and path['clik']. clik must be on PYTHONPATH and
+#   DYLD_LIBRARY_PATH -- source plc-3.01/bin/clik_profile.sh from BASH, not zsh, where
+#   its addvar function is a syntax error.
+#
+# COST, measured on an 8-core M3 with CLASS++ 26.0.0 at one thread per rank:
+#   1.9 s per likelihood evaluation, so 4.2 evaluations/s across 8 MPI ranks.
+#   2000 + 15x2000 = 32,000 evaluations is about 2.1 h of likelihood, plus training
+#   and sampling. Stock CLASS 3.3.4 is 7.3 s/evaluation -- 3.9x slower, about 8 h of
+#   likelihood for the same run. See docs for the CLASS++ switch.
+#
+# ON n_sigma. The 1-sigma values in the .param file are MARGINAL proposal widths, and
+# the Planck LambdaCDM posterior is strongly correlated, so a hypercube of marginal
+# widths sits well off the degeneracy directions and gets deep fast. Measured with a
+# 24-point Latin hypercube at each width, depth below the fiducial best fit in
+# log-units:
+#
+#     n_sigma     best     median      worst     all finite?
+#         2.0     83.8      332.6     1242.7     24/24
+#         3.0    161.2      859.3     4303.1     24/24
+#         5.0    889.7     2658.9    10915.0     24/24
+#        10.0   2167.9     9172.5    28459.3     24/24
+#
+#   3.0 is shipped: it comfortably contains the posterior, and at a 859-log-unit median
+#   depth it is roughly as hard as the +/-30 sigma 29D banana (4041 log-units at 29D),
+#   which is the regime msre_ess_floor was built for. Widen to 5.0 for a harder test.
+#   CLASS did not fail once in 96 draws out of to +/-10 sigma, so the run is not at risk
+#   of a design decimated by non-finite targets -- but client.py filters them if it is.
+#
+# WHAT HAS NO ANALOGUE HERE
+#   There is no reference chain and no analytic truth, so the credible metric is not
+#   available. Judge this run on validation loss, the convergence metric, resampling
+#   acceptance and max(tau), and compare the final posterior against the published
+#   Planck 2018 base_plikHM_TTTEEE_lowl_lowE_lensing contours.
+
+likelihood:
+  wrapper: montepython
+  input: input/montepython/base2018TTTEEE_lensing_bao.param
+
+prior:
+  n_samples: 2000
+  sampling_strategy: lhs
+  n_sigma: 3.0
+  # n_inject: 100        # quadratic-fit peak seeding, off by default; see README
+
+# NO INJECTION, AND THE RUN JUSTIFIES IT. Neither prior.n_inject nor
+# acquisition.n_inject is set. Injection exists to rescue a design that cannot reach
+# the peak -- the 58D Euclid case, where the closest design point sat 242 sigma out
+# and the base arm's best log-likelihood was -29,033 against a true maximum of +343.9.
+# This target is not in that regime:
+#
+#   * the best of the 2000 design points is -1439.22 against a fiducial best fit of
+#     -1395.98, i.e. the design starts ~43 log-units from the peak (a lower bound --
+#     the fiducial point is not the true maximum);
+#   * the msre ESS floor annealed itself off after ONE iteration (x2.16 at it0 on the
+#     raw design, x1.00 and ESS 1614/4000 at it1, x1.00 and 3251/6000 at it2), which
+#     is the signature of acquisition filling the peak region unaided.
+#
+# So the mechanism has nothing to repair here and would cost 100 true evaluations per
+# iteration, ~5% of the budget. TO TEST IT PROPERLY, do it at a WIDER box where the
+# regime actually bites -- n_sigma 5.0 puts the median design point 2659 log-units
+# down instead of 859 -- with acquisition.n_inject: 100 as the only difference.
+# At +/-3 sigma the comparison would most likely be an expensive null.
+
+acquisition:
+  n_append: 2000
+  pool_factor: 20
+  n_neighbors: 20
+  target_temperature: 7.0
+  batch_size: 10         # batched selector: 10x faster than exact, KS < 0.01 against it
+
+model:
+  n_layers: 5
+  n_neurons: 512
+  activation: alsing
+
+training:
+  n_epochs: 5000
+  batch_size: 128
+  loss: msre
+  sigma_level: 3
+  msre_ess_floor: 0.1    # essential here: the initial design is ~859 log-units off peak
+  learning_rate: 0.0001
+  validation_split: 0.1
+  patience: 250          # USED: lr_schedule is 'none', so this is the stopping rule
+  lr_schedule: none      # constant 1e-4; annealing is unsafe on a sparse design
+  warm_start: true
+
+sampling:
+  sampler: aies
+  temperature: 7.0
+  n_walkers: 216
+  n_steps: 100000
+  burn_in: 5000
+  thin: 5                # 27D x 216 x 20000 x 4 B = 466 MB, against 2.3 GB unthinned
+  chunk_size: 5000
+
+convergence:
+  metric: gaussian_posterior_drift
+  threshold: 0.01
+  max_iterations: 16     # iterations 0..15; launch with -i 16 to disable the criterion
+
+seed: 42

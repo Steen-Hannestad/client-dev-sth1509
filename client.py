@@ -7,6 +7,7 @@ import numpy as np
 from likelihood.base import build_likelihood
 from utils.mpi_utils import (
     bcast,
+    bcast_idle,
     broadcast_and_evaluate,
     get_size,
     is_master,
@@ -501,8 +502,11 @@ def main():
             previous_chain_summary = chain_summary
 
         # Broadcast the stopping decision so all ranks leave the loop together.
+        # The workers have been idle through training, sampling and the convergence
+        # check, so this is one of the two long waits per iteration: bcast_idle
+        # parks them on a sleep-poll instead of spinning against rank 0's training.
         if use_convergence:
-            converged = bcast(converged)
+            converged = bcast_idle(converged)
             if converged:
                 if master:
                     iteration_elapsed_time = time.monotonic() - iteration_start_time
@@ -631,6 +635,17 @@ def main():
         metrics_tracker.save_all_metrics()
         print_master(f"\nRun completed: {run.run_id}")
         print_master(f"Results saved in: {run.run_dir}")
+
+    # The workers skip training, sampling and the convergence check, so on the LAST
+    # iteration they leave the loop while rank 0 still has all three to do -- there is
+    # no acquisition left to park them in. Without this they drop straight into
+    # MPI_Finalize, whose barrier spins, and seven ranks then contend with the final
+    # iteration's training exactly as they did before bcast_idle existed. Measured on
+    # a 150-epoch smoke run, one epoch stalled for 954 s.
+    #
+    # Park them on a sleeping wait instead; the master arrives here only once it is
+    # genuinely finished.
+    bcast_idle(True)
 
 
 if __name__ == "__main__":
